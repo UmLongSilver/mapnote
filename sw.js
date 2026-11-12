@@ -1,5 +1,5 @@
-// 오프라인 캐시 — 버전 fe856a9826
-const CACHE = 'mindmap-fe856a9826';
+// 오프라인 캐시 — 버전 ebe884fe7e
+const CACHE = 'mindmap-ebe884fe7e';
 const SHELL = ["./", "index.html", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/maskable-512.png", "icons/apple-touch-icon.png", "icons/favicon.png"];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

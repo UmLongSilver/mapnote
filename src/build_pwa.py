@@ -145,7 +145,9 @@ self.addEventListener('fetch', e => {{
 open(f'{OUT}/sw.js', 'w', encoding='utf-8').write(sw)
 
 # ---------- 안내 ----------
-readme = """# 마인드맵 웹앱
+readme = """# mapnote — 마인드맵 웹앱
+
+주소: https://umlongsilver.github.io/mapnote/
 
 Claude 로그인 없이 쓰는 독립 웹앱(PWA)입니다. 인터넷이 없어도 열리고, 홈 화면에 앱처럼 설치할 수 있어요.
 

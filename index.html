@@ -911,6 +911,11 @@ let g = null;       // 진행 중인 제스처
 let ghost = null, dropId = null;
 
 stage.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'mouse' && e.button !== 0) return;      // 우클릭·가운데 클릭은 무시
+  if (e.pointerType === 'mouse' && (g || pointers.size)) {      // 놓친 손떼기(pointerup)가 남긴 상태 정리
+    if (g && g.moved) endNodeDrag(false);
+    g = null; pointers.clear(); stage.classList.remove('panning');
+  }
   if (e.target.closest('.badge')) return;
   const stEl = e.target.closest('.sticky');
   const linkHit = stEl ? null : e.target.closest('.lhit,.llabel');
@@ -938,6 +943,7 @@ stage.addEventListener('pointerdown', e => {
 
 stage.addEventListener('pointermove', e => {
   const p = pointers.get(e.pointerId); if (!p || !g) return;
+  if (e.pointerType === 'mouse' && e.buttons === 0) { onUp(Object.assign({}, { pointerId: e.pointerId, type: 'pointercancel' })); return; }  // 버튼이 이미 떼어짐
   p.x = e.clientX; p.y = e.clientY;
   if (g.type === 'pinch' && pointers.size >= 2) {
     const [a, b] = [...pointers.values()];
@@ -1042,6 +1048,8 @@ function onUp(e) {
 }
 stage.addEventListener('pointerup', onUp);
 stage.addEventListener('pointercancel', onUp);
+// 캔버스에서는 브라우저 우클릭 메뉴 끄기 (글자 편집 중에는 그대로 — 복사·붙여넣기용)
+stage.addEventListener('contextmenu', e => { if (!e.target.closest('[contenteditable]')) e.preventDefault(); });
 
 function tapNode(id, wasSel) {
   if (linkFrom) { finishLink(id); return; }

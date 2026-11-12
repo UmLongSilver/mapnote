@@ -212,6 +212,15 @@ kbd{font:12px ui-monospace,Menlo,monospace;background:var(--bg);border:1px solid
   #notes:not(.editing) .nedit{display:none}
   #nBack{display:grid}
 }
+#updateNote{position:fixed;left:50%;top:64px;transform:translateX(-50%) translateY(-8px);opacity:0;pointer-events:none;z-index:45;
+  width:min(360px,calc(100vw - 24px));background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);
+  padding:14px 14px 12px 16px;transition:opacity .25s,transform .25s}
+#updateNote.show{opacity:1;transform:translateX(-50%);pointer-events:auto}
+#updateNote .uh{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px}
+#updateNote .uh .dot{width:8px;height:8px;border-radius:50%;background:#2f9e44;flex:none}
+#updateNote .uh .v{font-weight:400;color:var(--muted);font-size:12px}
+#updateNote .uh button{margin-left:auto;border:0;background:none;width:28px;height:28px;border-radius:8px;cursor:pointer;color:var(--muted)}
+#updateNote ul{margin:8px 0 0;padding-left:18px;font-size:13px;line-height:1.6}
 #toast{position:fixed;left:50%;top:70px;transform:translateX(-50%);max-width:calc(100vw - 32px);text-align:center;background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;
   font-size:13px;z-index:60;opacity:0;pointer-events:none;transition:opacity .2s}
 #toast.show{opacity:.94}
@@ -315,6 +324,7 @@ kbd{font:12px ui-monospace,Menlo,monospace;background:var(--bg);border:1px solid
 
 <div id="modal"><div class="box" id="modalBox"></div></div>
 <div id="toast"></div>
+<div id="updateNote" role="status"></div>
 
 <script>
 /* =========================================================
@@ -1521,7 +1531,7 @@ function showHelp() {
     ['관계선 편집', '선을 탭해 선택 → 이름 · 방향 바꾸기 · 삭제 (선택된 선을 한 번 더 탭하면 이름 편집)'], ['실행 취소', '<kbd>Ctrl</kbd>+<kbd>Z</kbd> · 다시: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>'],
     ['화면 이동', '빈 곳을 끌기 · 트랙패드 두 손가락'], ['확대/축소', '마우스 휠 · 두 손가락 핀치'],
   ];
-  openModal(`<h3>사용법 · 단축키</h3><div class="help"><table>${rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}</table></div>
+  openModal(`<h3>사용법 · 단축키 <span style="font-weight:400;font-size:12px;color:var(--muted)">v${APP_VERSION}</span></h3><div class="help"><table>${rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}</table></div>
     <div class="row"><button class="btn primary" id="mClose">닫기</button></div>`);
   $('#mClose').onclick = closeModal;
 }
@@ -1910,12 +1920,38 @@ async function initCloud() {
 }
 
 /* =========================================================
+   버전 · 업데이트 알림
+   새 기능을 넣을 때마다 CHANGELOG 맨 위에 한 줄 추가하면,
+   다음에 앱을 열었을 때 “업데이트 완료” 알림으로 보여 줘요.
+   ========================================================= */
+const CHANGELOG = [
+  { v: '2026.11.12-3', items: ['업데이트되면 이렇게 알려 드려요'] },
+  { v: '2026.11.12-2', items: ['우클릭한 노드가 클릭되지 않던 문제 수정'] },
+  { v: '2026.11.12-1', items: ['독립 웹앱(홈 화면 설치·오프라인)', '전체 백업 · 파일 가져오기'] },
+];
+const APP_VERSION = CHANGELOG[0].v;
+function checkUpdate(hadData) {
+  let last = null;
+  try { last = localStorage.getItem('mindmap.version'); localStorage.setItem('mindmap.version', APP_VERSION); } catch { return; }
+  if (last === APP_VERSION || (!last && !hadData)) return;  // 그대로이거나, 처음 쓰는 기기
+  const idx = CHANGELOG.findIndex(c => c.v === last);
+  const fresh = (idx < 0 ? CHANGELOG.slice(0, 3) : CHANGELOG.slice(0, idx)).flatMap(c => c.items).slice(0, 6);
+  const box = $('#updateNote');
+  box.innerHTML = `<div class="uh"><span class="dot"></span>업데이트 완료 <span class="v">v${APP_VERSION}</span><button title="닫기">✕</button></div>`
+    + (fresh.length ? '<ul>' + fresh.map(t => `<li>${esc(t)}</li>`).join('') + '</ul>' : '');
+  const hide = () => box.classList.remove('show');
+  box.querySelector('button').onclick = hide;
+  setTimeout(() => box.classList.add('show'), 400);
+  setTimeout(hide, 9000);
+}
+
+/* =========================================================
    시작
    ========================================================= */
 (function boot() {
   try {
     const s = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
-    if (s && s.maps) { maps = s.maps; currentId = s.currentId; tombstones = s.tombstones || {}; notes = s.notes || {}; noteTombs = s.noteTombs || {}; }
+    if (s && s.maps) { boot.hadData = true; maps = s.maps; currentId = s.currentId; tombstones = s.tombstones || {}; notes = s.notes || {}; noteTombs = s.noteTombs || {}; }
   } catch {}
   if (!Object.keys(maps).length) { const m = sampleMap(); maps[m.id] = m; currentId = m.id; saveLocal(); }
   if (!maps[currentId]) currentId = Object.values(maps).sort((a, b) => b.updatedAt - a.updatedAt)[0].id;
@@ -1924,6 +1960,7 @@ async function initCloud() {
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (!editing) { relayout(); fit(); } });
   addEventListener('resize', () => { if (!editing) updateBar(); });
   initCloud();
+  checkUpdate(boot.hadData);
 })();
 </script>
 <div id="installBar" class="pill" style="display:none;position:fixed;left:50%;top:62px;transform:translateX(-50%);z-index:15;padding:6px 6px 6px 14px;gap:8px;font-size:13px;white-space:nowrap">
@@ -1935,11 +1972,6 @@ async function initCloud() {
 /* ===== 독립 웹앱(PWA) 전용 ===== */
 if ('serviceWorker' in navigator) {
   addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
-  // 새 버전이 설치되면 알려 주기
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (window.__swReloaded) return; window.__swReloaded = true;
-    try { toast('새 버전으로 업데이트됐어요'); } catch {}
-  });
 }
 // 브라우저가 데이터를 함부로 지우지 않도록 요청
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});

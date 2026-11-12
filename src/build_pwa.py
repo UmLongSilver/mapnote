@@ -75,11 +75,6 @@ tail = """<div id="installBar" class="pill" style="display:none;position:fixed;l
 /* ===== 독립 웹앱(PWA) 전용 ===== */
 if ('serviceWorker' in navigator) {
   addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
-  // 새 버전이 설치되면 알려 주기
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (window.__swReloaded) return; window.__swReloaded = true;
-    try { toast('새 버전으로 업데이트됐어요'); } catch {}
-  });
 }
 // 브라우저가 데이터를 함부로 지우지 않도록 요청
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});

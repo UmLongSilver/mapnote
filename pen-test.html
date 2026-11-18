@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>펜 테스트 · mapnote</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #f6f5f2; color: #1f1e1c;
+    font-family: system-ui, -apple-system, "Noto Sans KR", sans-serif; touch-action: none;
+    -webkit-user-select: none; user-select: none; overscroll-behavior: none; }
+  /* 공책 줄 */
+  body { background-image: linear-gradient(#e6e2d9 1px, transparent 1px); background-size: 100% 40px; background-position: 0 20px; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; }
+  #panel { position: fixed; top: 10px; left: 10px; right: 10px; z-index: 5; display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center;
+    background: #fff; border: 1px solid #e3e0d8; border-radius: 14px; padding: 8px 12px; box-shadow: 0 6px 20px rgba(30,25,15,.08); font-size: 14px; }
+  .seg { display: flex; border: 1px solid #e3e0d8; border-radius: 10px; overflow: hidden; }
+  .seg button { border: 0; background: none; padding: 8px 12px; font: inherit; cursor: pointer; }
+  .seg button.on { background: #1f1e1c; color: #fff; }
+  label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  input[type=range] { width: 130px; }
+  .val { min-width: 34px; font-variant-numeric: tabular-nums; color: #7b776f; }
+  .dot { width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+  .dot.on { border-color: #1f1e1c; box-shadow: 0 0 0 2px #fff inset; }
+  .btn { border: 1px solid #e3e0d8; background: #fff; border-radius: 10px; padding: 8px 12px; font: inherit; cursor: pointer; }
+  .opts { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: #4a4741; }
+  #more { display: none; width: 100%; }
+  #panel.open #more { display: flex; }
+  #stats { position: fixed; left: 10px; bottom: 10px; z-index: 5; background: rgba(255,255,255,.94); border: 1px solid #e3e0d8; border-radius: 12px;
+    padding: 8px 12px; font: 12px/1.65 ui-monospace, Menlo, monospace; white-space: pre; pointer-events: none; }
+  a { color: #3b6cf6; }
+</style>
+</head>
+<body>
+<canvas id="base"></canvas>
+<canvas id="live"></canvas>
+
+<div id="panel">
+  <div class="seg" id="penSeg">
+    <button data-pen="ball">볼펜</button><button data-pen="fountain">만년필</button><button data-pen="hl">형광펜</button>
+  </div>
+  <label>안정화 <input type="range" id="stab" min="0" max="90" step="5"><span class="val" id="stabV"></span></label>
+  <label>굵기 <input type="range" id="width" min="1" max="8" step="0.5"><span class="val" id="widthV"></span></label>
+  <div style="display:flex;gap:6px" id="colors"></div>
+  <button class="btn" id="undo">되돌리기</button>
+  <button class="btn" id="clear">지우기</button>
+  <button class="btn" id="toggleMore">설정 ▾</button>
+  <div id="more" class="opts">
+    <label><input type="checkbox" id="tip"> 펜 끝은 바로 그리기 (지연 숨기기)</label>
+    <label><input type="checkbox" id="predict"> 다음 위치 예측해서 앞서 그리기</label>
+    <label><input type="checkbox" id="adaptive"> 속도 따라 안정화 (천천히=강하게)</label>
+    <label><input type="checkbox" id="raw"> 빠른 입력 이벤트(rawupdate) 쓰기</label>
+    <label><input type="checkbox" id="saved"> 펜 뗀 뒤 저장본(단순화)으로 다시 그리기</label>
+    <label><input type="checkbox" id="finger"> 손가락으로도 그리기</label>
+    <a href="./">← mapnote로</a>
+  </div>
+</div>
+<div id="stats">펜으로 써 보세요</div>
+
+<script>
+/* =========================================================
+   mapnote 펜 테스트 — 갤럭시 탭(S펜) · 크롬/삼성 인터넷 기준
+   - 저지연: desynchronized 캔버스, coalesced/predicted 이벤트, pointerrawupdate
+   - 안정화: 지수 평활(EMA) + 속도 적응, 펜 끝 원본 표시, 뗄 때 끝점 따라잡기
+   - 저장: RDP 단순화 + 0.25px 단위 차이값(Int16) 인코딩 → 용량 비교 표시
+   ========================================================= */
+const $ = s => document.querySelector(s);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const DEF = { pen: 'fountain', stab: 25, width: 3, color: '#1f1e1c', tip: true, predict: true, adaptive: true, raw: true, saved: true, finger: false };
+let S = { ...DEF };
+try { Object.assign(S, JSON.parse(localStorage.getItem('mapnote.pentest') || '{}')); } catch {}
+const saveS = () => { try { localStorage.setItem('mapnote.pentest', JSON.stringify(S)); } catch {} };
+
+/* ---------- 캔버스 ---------- */
+const base = $('#base'), live = $('#live');
+const bctx = base.getContext('2d');
+const lctx = live.getContext('2d', { desynchronized: true });   // 화면 갱신을 기다리지 않고 바로 그리기
+const DESYNC = !!(lctx.getContextAttributes && lctx.getContextAttributes().desynchronized);
+let dpr = 1, W = 0, H = 0;
+function resize() {
+  dpr = window.devicePixelRatio || 1; W = innerWidth; H = innerHeight;
+  for (const c of [base, live]) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+  for (const x of [bctx, lctx]) { x.setTransform(dpr, 0, 0, dpr, 0, 0); x.lineCap = 'round'; x.lineJoin = 'round'; }
+  redrawBase();
+}
+addEventListener('resize', resize);
+
+/* ---------- 획 그리기 ---------- */
+function drawStroke(ctx, pts, pen, color) {
+  if (!pts.length) return;
+  ctx.strokeStyle = color; ctx.fillStyle = color;
+  if (pen === 'hl') {                                   // 형광펜: 한 번에 그려서 겹침 진해짐 방지
+    ctx.save(); ctx.globalAlpha = 0.32; ctx.lineCap = 'square'; ctx.lineWidth = pts[0].w;
+    ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length - 1; i++) { const mx = (pts[i].x + pts[i + 1].x) / 2, my = (pts[i].y + pts[i + 1].y) / 2; ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my); }
+    if (pts.length > 1) ctx.lineTo(pts.at(-1).x, pts.at(-1).y);
+    ctx.stroke(); ctx.restore(); return;
+  }
+  if (pts.length === 1) { ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, pts[0].w / 2, 0, Math.PI * 2); ctx.fill(); return; }
+  // 굵기가 변하는 선: 중간점끼리 곡선으로 잇고, 구간마다 굵기 적용
+  let px = pts[0].x, py = pts[0].y;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    ctx.beginPath(); ctx.moveTo(px, py);
+    if (i === 1) ctx.lineTo(mx, my); else ctx.quadraticCurveTo(a.x, a.y, mx, my);
+    ctx.lineWidth = (a.w + b.w) / 2; ctx.stroke();
+    px = mx; py = my;
+  }
+  const z = pts.at(-1);
+  ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(z.x, z.y); ctx.lineWidth = z.w; ctx.stroke();
+}
+let strokes = [];
+function redrawBase() { bctx.clearRect(0, 0, W, H); for (const s of strokes) drawStroke(bctx, s.pts, s.pen, s.color); }
+
+/* ---------- 굵기 (만년필: 필압·속도·펜촉 각도) ---------- */
+function targetWidth(p, speed, ang) {
+  const w = S.width;
+  if (S.pen === 'hl') return w * 5;
+  if (S.pen === 'ball') return w * (0.85 + 0.3 * p);
+  const pressure = 0.45 + 1.1 * p;                        // 세게 누르면 굵게
+  const spd = clamp(1 / (1 + speed * 0.35), 0.55, 1);      // 빠르면 가늘게
+  const nib = 0.45 + 0.55 * Math.abs(Math.sin(ang + Math.PI / 4));   // ↗ 방향은 가늘고 ↘ 방향은 굵게 (만년필 펜촉)
+  return w * 1.25 * pressure * spd * nib;
+}
+
+/* ---------- 현재 획 ---------- */
+let drawingId = null, raw = [], sm = [], speedEMA = 0, lastAng = 0, strokeStart = 0, evCount = 0, predUsed = 0;
+function pressureOf(e) { return e.pointerType === 'mouse' ? 0.5 : (e.pressure || 0.5); }
+function addPoint(x, y, p, t) {
+  const prev = raw.at(-1);
+  raw.push({ x, y, p, t });
+  if (!sm.length) { sm.push({ x, y, w: targetWidth(p, 0, 0) }); return; }
+  const dt = Math.max(1, t - prev.t), speed = Math.hypot(x - prev.x, y - prev.y) / dt;   // px/ms
+  speedEMA = speedEMA * 0.7 + speed * 0.3;
+  let s = S.stab / 100;
+  if (S.adaptive) s *= clamp(1.15 - speedEMA / 1.5, 0.25, 1);     // 빠를수록 안정화 약하게 → 모서리 유지
+  const L = sm.at(-1), k = 1 - s * 0.9;
+  const nx = L.x + (x - L.x) * k, ny = L.y + (y - L.y) * k;
+  if (Math.hypot(nx - L.x, ny - L.y) < 0.35) return;
+  lastAng = Math.atan2(ny - L.y, nx - L.x);
+  const tw = targetWidth(p, speedEMA, lastAng);
+  sm.push({ x: nx, y: ny, w: L.w + (tw - L.w) * 0.35 });          // 굵기도 부드럽게 변화
+}
+function renderLive(tip, predicted) {
+  lctx.clearRect(0, 0, W, H);
+  if (!sm.length) return;
+  const pts = sm.slice(), w = sm.at(-1).w;
+  if (S.tip && tip) pts.push({ x: tip.x, y: tip.y, w });           // 펜 끝은 안정화 없이 바로
+  if (S.predict && predicted) for (const q of predicted) pts.push({ x: q.x, y: q.y, w });
+  drawStroke(lctx, pts, S.pen, S.color);
+}
+
+/* ---------- 저장용 단순화 + 인코딩 ---------- */
+function rdp(pts, eps) {
+  if (pts.length < 3) return pts.slice();
+  const keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1;
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop(); const A = pts[a], B = pts[b];
+    const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy) || 1;
+    let best = -1, bd = 0;
+    for (let i = a + 1; i < b; i++) {
+      const P = pts[i];
+      const d = Math.abs(dy * P.x - dx * P.y + B.x * A.y - B.y * A.x) / len;
+      const dw = Math.abs(P.w - (A.w + B.w) / 2);                    // 굵기가 크게 바뀌는 점도 남김
+      const score = Math.max(d, dw * 1.2);
+      if (score > bd) { bd = score; best = i; }
+    }
+    if (bd > eps && best > 0) { keep[best] = 1; stack.push([a, best], [best, b]); }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+function encode(pts) {        // 0.25px 단위 차이값 Int16 x,y + 굵기 Uint8 → 점당 5바이트
+  const buf = new DataView(new ArrayBuffer(4 + pts.length * 5));
+  let px = 0, py = 0;
+  buf.setUint32(0, pts.length);
+  pts.forEach((p, i) => {
+    const qx = Math.round(p.x * 4), qy = Math.round(p.y * 4);
+    buf.setInt16(4 + i * 5, clamp(qx - px, -32768, 32767)); buf.setInt16(6 + i * 5, clamp(qy - py, -32768, 32767));
+    buf.setUint8(8 + i * 5, clamp(Math.round(p.w * 10), 0, 255));
+    px = qx; py = qy;
+  });
+  return buf.byteLength;
+}
+
+/* ---------- 입력 ---------- */
+const MOVE_EVT = S.raw && 'onpointerrawupdate' in window ? 'pointerrawupdate' : 'pointermove';
+let moveEvt = MOVE_EVT;
+function accept(e) {
+  if (e.pointerType === 'touch' && !S.finger) return false;      // 손가락·손바닥은 무시
+  if (e.pointerType === 'mouse' && e.button !== 0) return false;
+  return true;
+}
+live.addEventListener('pointerdown', e => {
+  if (!accept(e) || drawingId !== null) return;
+  e.preventDefault();
+  try { live.setPointerCapture(e.pointerId); } catch {}
+  drawingId = e.pointerId; raw = []; sm = []; speedEMA = 0; evCount = 0; predUsed = 0; strokeStart = e.timeStamp;
+  lastType = e.pointerType;
+  addPoint(e.clientX, e.clientY, pressureOf(e), e.timeStamp);
+  renderLive({ x: e.clientX, y: e.clientY });
+});
+function onMove(e) {
+  if (e.pointerId !== drawingId) return;
+  const list = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+  for (const ev of (list.length ? list : [e])) { addPoint(ev.clientX, ev.clientY, pressureOf(ev), ev.timeStamp); evCount++; }
+  let pred = null;
+  if (S.predict && e.getPredictedEvents) { pred = e.getPredictedEvents().map(p => ({ x: p.clientX, y: p.clientY })); predUsed += pred.length ? 1 : 0; }
+  lastPressure = pressureOf(e);
+  renderLive({ x: e.clientX, y: e.clientY }, pred);
+}
+function bindMove() { live.removeEventListener('pointermove', onMove); live.removeEventListener('pointerrawupdate', onMove);
+  moveEvt = S.raw && 'onpointerrawupdate' in window ? 'pointerrawupdate' : 'pointermove'; live.addEventListener(moveEvt, onMove); }
+function finish(e) {
+  if (e.pointerId !== drawingId) return;
+  drawingId = null;
+  if (e.type === 'pointerup' && raw.length) {           // 끝점 따라잡기: 안정화로 짧아진 꼬리를 실제 뗀 곳까지
+    const last = raw.at(-1), L = sm.at(-1);
+    if (L && Math.hypot(last.x - L.x, last.y - L.y) > 0.5) sm.push({ x: last.x, y: last.y, w: L.w * 0.85 });
+  }
+  lctx.clearRect(0, 0, W, H);
+  if (!sm.length || e.type === 'pointercancel') return;
+  const simple = rdp(sm, S.pen === 'hl' ? 1.2 : 0.6);
+  const stroke = { pen: S.pen, color: S.color, pts: S.saved ? simple : sm };
+  strokes.push(stroke);
+  drawStroke(bctx, stroke.pts, stroke.pen, stroke.color);
+  const dur = Math.max(1, (raw.at(-1).t - strokeStart));
+  const naive = JSON.stringify(raw.map(p => ({ x: +p.x.toFixed(2), y: +p.y.toFixed(2), p: +p.p.toFixed(3), t: Math.round(p.t) }))).length;
+  const packed = encode(simple);
+  lastStats = { rawN: raw.length, smN: sm.length, simpleN: simple.length, hz: Math.round(raw.length / dur * 1000), naive, packed };
+  updateStats();
+}
+live.addEventListener('pointerup', finish);
+live.addEventListener('pointercancel', finish);
+live.addEventListener('lostpointercapture', e => { if (e.pointerId === drawingId) finish({ pointerId: e.pointerId, type: 'pointerup' }); });
+document.addEventListener('touchstart', e => { if (!e.target.closest('#panel')) e.preventDefault(); }, { passive: false });   // 스크롤·확대 막기
+document.addEventListener('contextmenu', e => e.preventDefault());
+
+/* ---------- 정보 표시 ---------- */
+let lastStats = null, lastType = '-', lastPressure = 0;
+const UA = /SamsungBrowser\/([\d.]+)/.exec(navigator.userAgent) ? '삼성 인터넷 ' + /SamsungBrowser\/([\d.]+)/.exec(navigator.userAgent)[1]
+  : /Chrome\/([\d]+)/.exec(navigator.userAgent) ? '크롬 ' + /Chrome\/([\d]+)/.exec(navigator.userAgent)[1] : '기타 브라우저';
+function updateStats() {
+  const yes = b => b ? '켜짐' : '없음';
+  let t = `${UA} · 입력 ${lastType} · 필압 ${lastPressure.toFixed(2)}\n`;
+  t += `빠른 그리기 캔버스 ${yes(DESYNC)} · 예측 ${yes(!!PointerEvent.prototype.getPredictedEvents)} · rawupdate ${moveEvt === 'pointerrawupdate' ? '사용 중' : '안 씀'}\n`;
+  if (lastStats) {
+    const s = lastStats;
+    t += `마지막 획: 입력 ${s.rawN}점 (${s.hz}Hz) → 안정화 ${s.smN}점 → 저장 ${s.simpleN}점\n`;
+    t += `용량: 그대로 ${s.naive.toLocaleString()}B → 압축 ${s.packed}B (약 ${Math.max(1, Math.round(s.naive / s.packed))}분의 1)`;
+  }
+  $('#stats').textContent = t;
+}
+
+/* ---------- 설정 UI ---------- */
+const COLORS = ['#1f1e1c', '#1c4fd8', '#e03131', '#f59f00'];
+function syncUI() {
+  document.querySelectorAll('#penSeg button').forEach(b => b.classList.toggle('on', b.dataset.pen === S.pen));
+  $('#stab').value = S.stab; $('#stabV').textContent = S.stab + '%';
+  $('#width').value = S.width; $('#widthV').textContent = S.width;
+  ['tip', 'predict', 'adaptive', 'raw', 'saved', 'finger'].forEach(k => $('#' + k).checked = !!S[k]);
+  $('#colors').innerHTML = '';
+  for (const c of COLORS) { const b = document.createElement('button'); b.className = 'dot' + (S.color === c ? ' on' : ''); b.style.background = c; b.onclick = () => { S.color = c; saveS(); syncUI(); }; $('#colors').appendChild(b); }
+}
+document.querySelectorAll('#penSeg button').forEach(b => b.onclick = () => { S.pen = b.dataset.pen; if (S.pen === 'hl' && S.color === '#1f1e1c') S.color = '#f59f00'; saveS(); syncUI(); });
+$('#stab').oninput = e => { S.stab = +e.target.value; saveS(); syncUI(); };
+$('#width').oninput = e => { S.width = +e.target.value; saveS(); syncUI(); };
+['tip', 'predict', 'adaptive', 'raw', 'saved', 'finger'].forEach(k => $('#' + k).onchange = e => { S[k] = e.target.checked; saveS(); if (k === 'raw') bindMove(); updateStats(); });
+$('#undo').onclick = () => { strokes.pop(); redrawBase(); };
+$('#clear').onclick = () => { strokes = []; redrawBase(); lastStats = null; updateStats(); };
+$('#toggleMore').onclick = () => { $('#panel').classList.toggle('open'); $('#toggleMore').textContent = $('#panel').classList.contains('open') ? '설정 ▴' : '설정 ▾'; };
+
+syncUI(); resize(); bindMove(); updateStats();
+</script>
+</body>

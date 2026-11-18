@@ -4,6 +4,9 @@
 
 Claude 로그인 없이 쓰는 독립 웹앱(PWA)입니다. 인터넷이 없어도 열리고, 홈 화면에 앱처럼 설치할 수 있어요.
 
+## 펜 테스트
+- https://umlongsilver.github.io/mapnote/pen-test.html — 갤럭시 탭(S펜)에서 필기 지연·안정화·저장 용량을 시험하는 페이지
+
 ## 올리는 법 (GitHub Pages, 무료)
 1. github.com 에서 새 저장소(Repository)를 만듭니다. 예: mapnote
 2. 이 폴더 안의 파일을 모두 그대로 올립니다. (Add file → Upload files → index.html, manifest.webmanifest, sw.js, icons 폴더)

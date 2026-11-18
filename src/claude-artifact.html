@@ -253,6 +253,8 @@ kbd{font:12px ui-monospace,Menlo,monospace;background:var(--bg);border:1px solid
   <button id="bEdit"></button>
   <button id="bLink"></button>
   <button id="bColor"></button>
+  <button id="bBold" title="굵게 (Ctrl+B)"></button>
+  <button id="bStrike" title="취소선 (Ctrl+Shift+X)"></button>
   <button id="bFold"></button>
   <button id="bReset"></button>
   <button id="bDel" class="danger"></button>
@@ -265,6 +267,8 @@ kbd{font:12px ui-monospace,Menlo,monospace;background:var(--bg);border:1px solid
 <div class="pill" id="sbar" style="display:none;position:fixed;left:50%;bottom:16px;transform:translateX(-50%);gap:2px;z-index:10">
   <button id="sEdit"></button>
   <button id="sLink"></button>
+  <button id="sBold" title="굵게 (Ctrl+B)"></button>
+  <button id="sStrike" title="취소선 (Ctrl+Shift+X)"></button>
   <button id="sColor"></button>
   <button id="sDetach"></button>
   <button id="sDel" class="danger"></button>
@@ -334,6 +338,68 @@ const $ = s => document.querySelector(s);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
+/* ---------- 글자 꾸미기: **굵게**, ~~취소선~~ ----------
+   데이터는 마크다운처럼 기호가 들어간 글 그대로 저장하고, 화면에 보일 때만 꾸며서 보여 줌 */
+const escHTML = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const FMT_RE = /\*\*([\s\S]+?)\*\*|~~([\s\S]+?)~~/g;
+function fmtHTML(text) {                 // 화면용 HTML
+  let out = '', last = 0, m; const re = new RegExp(FMT_RE.source, 'g');
+  while ((m = re.exec(text))) {
+    out += escHTML(text.slice(last, m.index));
+    out += m[1] !== undefined ? '<b>' + fmtHTML(m[1]) + '</b>' : '<s>' + fmtHTML(m[2]) + '</s>';
+    last = re.lastIndex;
+  }
+  return out + escHTML(text.slice(last));
+}
+const plain = text => (text || '').replace(/\*\*([\s\S]+?)\*\*/g, '$1').replace(/~~([\s\S]+?)~~/g, '$1');
+function fmtSegments(line, b = false, s = false, out = []) {   // SVG 내보내기용 조각
+  let last = 0, m; const re = new RegExp(FMT_RE.source, 'g');
+  while ((m = re.exec(line))) {
+    if (m.index > last) out.push({ t: line.slice(last, m.index), b, s });
+    if (m[1] !== undefined) fmtSegments(m[1], true, s, out); else fmtSegments(m[2], b, true, out);
+    last = re.lastIndex;
+  }
+  if (last < line.length) out.push({ t: line.slice(last), b, s });
+  return out;
+}
+const MARK = { b: '**', s: '~~' };
+function toggleWhole(text, kind) {       // 글 전체에 꾸미기 켜기/끄기
+  const mk = MARK[kind], t = text.trim();
+  if (t.length > mk.length * 2 && t.startsWith(mk) && t.endsWith(mk)) return t.slice(mk.length, -mk.length);
+  const inner = kind === 'b' ? t.replace(/\*\*/g, '') : t.replace(/~~/g, '');
+  return mk + inner + mk;
+}
+/* 편집 중인 칸/글상자에서 선택한 글자를 감싸거나 풀기 (Ctrl+B, Ctrl+Shift+X) */
+function wrapSelection(el, kind) {
+  const mk = MARK[kind];
+  if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+    const a = el.selectionStart, b = el.selectionEnd, v = el.value, selTxt = v.slice(a, b);
+    let rep, s0, s1;
+    if (selTxt.startsWith(mk) && selTxt.endsWith(mk) && selTxt.length >= mk.length * 2) { rep = selTxt.slice(mk.length, -mk.length); s0 = a; s1 = a + rep.length; }
+    else if (v.slice(a - mk.length, a) === mk && v.slice(b, b + mk.length) === mk) { el.setSelectionRange(a - mk.length, b + mk.length); rep = selTxt; s0 = a - mk.length; s1 = s0 + rep.length; }
+    else { rep = mk + selTxt + mk; s0 = a + mk.length; s1 = s0 + selTxt.length; }
+    el.focus();
+    if (!document.execCommand('insertText', false, rep)) el.setRangeText(rep, el.selectionStart, el.selectionEnd, 'end');
+    el.setSelectionRange(s0, s1);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return;
+  }
+  const sl = getSelection(); if (!sl.rangeCount) return;
+  const selTxt = sl.toString();
+  if (!selTxt) { document.execCommand('insertText', false, mk + mk); for (let i = 0; i < mk.length; i++) sl.modify('move', 'backward', 'character'); return; }
+  const isWrapped = selTxt.startsWith(mk) && selTxt.endsWith(mk) && selTxt.length >= mk.length * 2;
+  const rep = isWrapped ? selTxt.slice(mk.length, -mk.length) : mk + selTxt + mk;
+  document.execCommand('insertText', false, rep);
+  for (let i = 0; i < rep.length; i++) sl.modify('extend', 'backward', 'character');
+}
+function fmtKey(e) {                       // 눌린 키가 꾸미기 단축키면 'b' / 's'
+  const mod = e.metaKey || e.ctrlKey; if (!mod || e.altKey) return null;
+  const k = e.key.toLowerCase();
+  if (k === 'b' && !e.shiftKey) return 'b';
+  if (k === 'x' && e.shiftKey) return 's';
+  return null;
+}
+
 /* ---------- 아이콘 ---------- */
 const P = {
   menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
@@ -366,6 +432,8 @@ const P = {
   eyeoff:'<path d="M9.9 4.2A10 10 0 0 1 12 4c6.5 0 10 8 10 8a17 17 0 0 1-2.2 3.2M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.4-1.6"/><path d="M2 2l20 20"/>',
   x:'<path d="M18 6 6 18M6 6l12 12"/>',
   plus:'<path d="M12 5v14M5 12h14"/>',
+  bold:'<path d="M7 5h6a3.5 3.5 0 0 1 0 7H7zM7 12h7a3.5 3.5 0 0 1 0 7H7z"/>',
+  strike:'<path d="M4 12h16M16.5 7.5C16 5.6 14.2 4.5 12 4.5c-2.6 0-4.5 1.4-4.5 3.4 0 1.5 1 2.5 3 3.1M8 16.5c.5 1.9 2.3 3 4.3 3 2.6 0 4.5-1.4 4.5-3.4 0-.6-.1-1.1-.4-1.6"/>',
   help:'<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/>',
   expand:'<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
   shrink:'<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>',
@@ -553,6 +621,14 @@ function edgePt(P, s, T) {
 }
 
 /* ---------- 노드 위치 조정 ---------- */
+function toggleNodeFmt(id, kind) {
+  const r = find(id); if (!r || !r.node.text.trim()) return;
+  snapshot(); r.node.text = toggleWhole(r.node.text, kind); changed();
+}
+function toggleStickyFmt(id, kind) {
+  const st = stickies().find(x => x.id === id); if (!st || !st.text.trim()) return;
+  snapshot(); st.text = toggleWhole(st.text, kind); changed();
+}
 function resetPos(id) { const r = find(id); if (!r || !(r.node.off || r.node.side)) return; snapshot(); delete r.node.off; delete r.node.side; changed(); }
 function resetAllPos() {
   snapshot(); (function w(n) { delete n.off; delete n.side; n.children.forEach(w); })(cur().root); changed(); fit();
@@ -606,10 +682,16 @@ function startStickyEdit(id, opt = {}) {
   const t = el.querySelector('.st');
   t.setAttribute('contenteditable', 'plaintext-only');
   if (t.contentEditable !== 'plaintext-only') t.setAttribute('contenteditable', 'true');
+  t.textContent = st.text;
   t.focus();
   const rg = document.createRange(); rg.selectNodeContents(t); rg.collapse(false);
   const sl = getSelection(); sl.removeAllRanges(); sl.addRange(rg);
-  t.onkeydown = e => { e.stopPropagation(); if (e.key === 'Escape') { e.preventDefault(); commitStickyEdit(); } };
+  t.onkeydown = e => {
+    e.stopPropagation();
+    if (e.isComposing || e.keyCode === 229) return;
+    const fk = fmtKey(e); if (fk) { e.preventDefault(); wrapSelection(t, fk); return; }
+    if (e.key === 'Escape') { e.preventDefault(); commitStickyEdit(); }
+  };
   t.onblur = () => { if (editingSticky === id) commitStickyEdit(); };
 }
 function commitStickyEdit(cancel = false) {
@@ -656,7 +738,7 @@ function render() {
     const el = document.createElement('div');
     el.className = 'node' + (depth === 0 ? ' root' : depth === 1 ? ' l1' : '');
     el.dataset.id = n.id;
-    const t = document.createElement('span'); t.className = 't'; t.textContent = n.text; el.appendChild(t);
+    const t = document.createElement('span'); t.className = 't'; t.innerHTML = fmtHTML(n.text); el.appendChild(t);
     if (depth === 0 && color) { el.style.background = color; el.style.borderColor = color; el.style.color = '#fff'; }
     else if (depth === 1) { el.style.borderColor = color; el.style.background = mixHex(color, nodeBg(), 0.13); }
     else if (depth > 1) { el.style.borderColor = mixHex(color, nodeBg(), 0.6); }
@@ -682,7 +764,7 @@ function render() {
   for (const st of stickies()) {
     const d = document.createElement('div'); d.className = 'sticky'; d.dataset.sticky = st.id;
     d.style.background = st.color || STICKY[0];
-    const t = document.createElement('span'); t.className = 'st'; t.textContent = st.text; d.appendChild(t);
+    const t = document.createElement('span'); t.className = 'st'; t.innerHTML = fmtHTML(st.text); d.appendChild(t);
     if (st.anchor) { const pin = document.createElement('div'); pin.className = 'pin'; d.appendChild(pin); }
     world.appendChild(d); sEls[st.id] = d;
   }
@@ -867,7 +949,8 @@ function startEdit(id, opt = {}) {
   const t = el.querySelector('.t');
   t.setAttribute('contenteditable', 'plaintext-only');
   if (t.contentEditable !== 'plaintext-only') t.setAttribute('contenteditable', 'true');
-  if (opt.replace) t.textContent = '';
+  t.textContent = opt.replace ? '' : r.node.text;      // 편집할 때는 꾸밈 기호가 보이는 원래 글
+  relayout();
   t.focus();
   if (!opt.replace && t.textContent) {
     const rg = document.createRange(); rg.selectNodeContents(t);
@@ -878,6 +961,7 @@ function startEdit(id, opt = {}) {
     e.stopPropagation();
     if (e.key === 'Enter' && !e.shiftKey && (e.isComposing || e.keyCode === 229)) { pendingEnter = true; return; }
     if (e.isComposing || e.keyCode === 229) return;
+    const fk = fmtKey(e); if (fk) { e.preventDefault(); wrapSelection(t, fk); relayout(); return; }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitEdit(); }
     else if (e.key === 'Escape') { e.preventDefault(); commitEdit(true); }
     else if (e.key === 'Tab') { e.preventDefault(); const nid = editing; commitEdit(); if (find(nid)) (e.shiftKey ? addSibling : addChild)(nid); }
@@ -1107,6 +1191,8 @@ document.addEventListener('keydown', e => {
   const mod = e.metaKey || e.ctrlKey, k = e.key;
   if (mod && k.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (mod && k.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
+  const fk = fmtKey(e);
+  if (fk && (sel || selSticky)) { e.preventDefault(); if (selSticky) toggleStickyFmt(selSticky, fk); else toggleNodeFmt(sel, fk); return; }
   if (k === 'Escape') { if (linkFrom) { cancelLink(); return; } hidePopovers(); closeSide(); sel = null; selSticky = null; const had = selLink; selLink = null; if (had) relayout(); applySel(); return; }
   if (selSticky) {
     if (k === 'L' && e.shiftKey && !mod) { e.preventDefault(); startLink(selSticky); return; }
@@ -1148,13 +1234,25 @@ barBtn('#bEdit', 'edit', '편집'); barBtn('#bColor', 'color', '색');
 barBtn('#bDel', 'trash', '삭제'); barBtn('#bLink', 'link', '연결');
 barBtn('#lLabel', 'tag', '이름'); barBtn('#lFlip', 'flip', '방향 바꾸기'); barBtn('#lDel', 'trash', '연결 삭제');
 $('#hintCancel').onclick = cancelLink;
+barBtn('#bBold', 'bold', '굵게'); barBtn('#bStrike', 'strike', '취소선');
+barBtn('#sBold', 'bold', '굵게'); barBtn('#sStrike', 'strike', '취소선');
+function fmtButton(kind, isSticky) {
+  // 편집 중이면 선택한 글자만, 아니면 글 전체를 꾸밈
+  if (!isSticky && editing) { const t = els[editing] && els[editing].querySelector('.t'); if (t) { wrapSelection(t, kind); relayout(); } return; }
+  if (isSticky && editingSticky) { const t = sEls[editingSticky] && sEls[editingSticky].querySelector('.st'); if (t) wrapSelection(t, kind); return; }
+  if (isSticky) { if (selSticky) toggleStickyFmt(selSticky, kind); } else if (sel) toggleNodeFmt(sel, kind);
+}
+$('#bBold').onclick = () => fmtButton('b', false);
+$('#bStrike').onclick = () => fmtButton('s', false);
+$('#sBold').onclick = () => fmtButton('b', true);
+$('#sStrike').onclick = () => fmtButton('s', true);
 barBtn('#bReset', 'reset', '원위치');
 barBtn('#sEdit', 'edit', '편집'); barBtn('#sLink', 'link', '연결');
 $('#sLink').onclick = () => { if (editingSticky) commitStickyEdit(); if (selSticky) startLink(selSticky); }; barBtn('#sColor', 'color', '색'); barBtn('#sDel', 'trash', '삭제');
 $('#btnSticky').innerHTML = '<svg class="i" viewBox="0 0 24 24" stroke-linejoin="round"><path d="M4 4h16v11l-5 5H4Z" fill="#ffd43b" stroke="#c99a06" stroke-width="1.6"/><path d="M15 20v-5h5" fill="#f0c020" stroke="#c99a06" stroke-width="1.6"/></svg>';
 $('#btnSticky').onclick = addSticky;
 $('#bReset').onclick = () => { if (editing) commitEdit(); if (sel) resetPos(sel); };
-['#sEdit', '#sLink', '#sColor', '#sDetach', '#sDel'].forEach(q => $(q).addEventListener('pointerdown', e => { if (editingSticky) e.preventDefault(); }));
+['#sEdit', '#sLink', '#sBold', '#sStrike', '#sColor', '#sDetach', '#sDel'].forEach(q => $(q).addEventListener('pointerdown', e => { if (editingSticky) e.preventDefault(); }));
 $('#sEdit').onclick = () => { if (editingSticky) commitStickyEdit(); else if (selSticky) startStickyEdit(selSticky); };
 $('#sDetach').onclick = () => { if (editingSticky) commitStickyEdit(); if (selSticky) detachSticky(selSticky); };
 $('#sDel').onclick = () => { const id = selSticky; if (editingSticky) commitStickyEdit(true); if (id && stickies().some(x => x.id === id)) removeSticky(id); };
@@ -1184,7 +1282,7 @@ $('#lDel').onclick = () => selLink && removeLink(selLink);
 
 function updateChrome() {
   const m = cur(); if (!m) return;
-  $('#mapTitle').textContent = m.root.text.split('\n')[0] || '제목 없음';
+  $('#mapTitle').textContent = plain(m.root.text).split('\n')[0] || '제목 없음';
   document.title = ($('#mapTitle').textContent) + ' · 마인드맵';
   $('#btnUndo').disabled = !undoStack.length;
   $('#btnRedo').disabled = !redoStack.length;
@@ -1205,7 +1303,7 @@ function updateBar() {
   $('#bReset').style.display = r.node.off || r.node.side ? '' : 'none';
 }
 const keepFocus = el => el.addEventListener('pointerdown', e => { if (editing) e.preventDefault(); });
-['#bChild', '#bSib', '#bEdit', '#bLink', '#bColor', '#bFold', '#bReset', '#bDel'].forEach(s => keepFocus($(s)));
+['#bChild', '#bSib', '#bEdit', '#bLink', '#bColor', '#bBold', '#bStrike', '#bFold', '#bReset', '#bDel'].forEach(s => keepFocus($(s)));
 $('#bChild').onclick = () => { const id = editing || sel; if (editing) commitEdit(); if (find(id)) addChild(id); };
 $('#bSib').onclick = () => { const id = editing || sel; if (editing) commitEdit(); if (find(id)) addSibling(id); };
 $('#bEdit').onclick = () => { if (editing) commitEdit(); else if (sel) startEdit(sel); };
@@ -1276,7 +1374,7 @@ function renderList() {
   for (const m of arr) {
     const it = document.createElement('div'); it.className = 'item' + (m.id === currentId ? ' on' : '');
     const meta = document.createElement('div'); meta.className = 'meta';
-    const nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = m.root.text.split('\n')[0] || '제목 없음';
+    const nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = plain(m.root.text).split('\n')[0] || '제목 없음';
     const sub = document.createElement('div'); sub.className = 'sub'; sub.textContent = `${fmtDate(m.updatedAt)} · 주제 ${countNodes(m.root)}개`;
     meta.append(nm, sub); it.appendChild(meta);
     if (confirmDel === m.id) {
@@ -1419,7 +1517,8 @@ function buildSvgInner() {
     const align = el.classList.contains('root') ? 'middle' : 'start';
     const tx = align === 'middle' ? p.x : x + parseFloat(st.paddingLeft);
     lines.forEach((ln, i) => {
-      out += `<text x="${tx}" y="${p.y + (i - (lines.length - 1) / 2) * lh}" dominant-baseline="central" text-anchor="${align}" font-size="${fs}" font-weight="${st.fontWeight}" fill="${st.color}">${esc(ln)}</text>`;
+      const segs = fmtSegments(ln).map(g => `<tspan${g.b ? ' font-weight="700"' : ''}${g.s ? ' text-decoration="line-through"' : ''}>${esc(g.t)}</tspan>`).join('');
+      out += `<text x="${tx}" y="${p.y + (i - (lines.length - 1) / 2) * lh}" dominant-baseline="central" text-anchor="${align}" font-size="${fs}" font-weight="${st.fontWeight}" fill="${st.color}">${segs}</text>`;
     });
   }
   const ctx = document.createElement('canvas').getContext('2d');
@@ -1430,7 +1529,7 @@ function buildSvgInner() {
     out += `<g transform="rotate(-1.3 ${x + w / 2} ${y + h / 2})"><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="3" fill="${st.color || STICKY[0]}"/>`;
     ctx.font = '14px "Noto Sans KR", sans-serif';
     const lines = [];
-    for (const para of st.text.split('\n')) {
+    for (const para of plain(st.text).split('\n')) {
       let line = '';
       for (const ch of para) { if (ctx.measureText(line + ch).width > w - 26 && line) { lines.push(line); line = ch; } else line += ch; }
       lines.push(line);
@@ -1514,6 +1613,7 @@ function showHelp() {
     ['편집 끝내기', '<kbd>Enter</kbd> (줄바꿈은 <kbd>Shift</kbd>+<kbd>Enter</kbd>) · <kbd>Esc</kbd> 취소'],
     ['하위 주제 추가', '<kbd>Tab</kbd>'], ['같은 단계 추가', '<kbd>Enter</kbd>'], ['삭제', '<kbd>Delete</kbd> / <kbd>Backspace</kbd>'],
     ['노드 사이 이동', '방향키'], ['접기/펼치기', '<kbd>Ctrl</kbd>+<kbd>.</kbd> · 접힌 노드 옆 숫자 배지 탭'],
+    ['굵게 · 취소선', '<kbd>Ctrl</kbd>+<kbd>B</kbd> · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd> (편집 중이면 선택한 글자만, 아니면 노드 전체) · 툴바 버튼'],
     ['위치 조정', '노드를 끌어 빈 곳에 놓기 (하위 주제도 함께 이동) · 툴바 “원위치”로 되돌리기'],
     ['다른 주제 아래로', '노드를 끌어 다른 노드 위에 놓기'],
     ['포스트잇', '상단 포스트잇 버튼 · 노드를 선택한 상태면 그 노드에 붙어서 함께 움직여요'],
@@ -1620,6 +1720,7 @@ $('#nTitle').addEventListener('keydown', e => {
 });
 // 텍스트 영역에서 Tab으로 들여쓰기
 $('#nBody').addEventListener('keydown', e => {
+  if (!e.isComposing) { const fk = fmtKey(e); if (fk) { e.preventDefault(); wrapSelection(e.target, fk); return; } }
   if (e.key !== 'Tab' || e.isComposing) return;
   e.preventDefault();
   const t = e.target, st = t.selectionStart, en = t.selectionEnd, v = t.value;
@@ -1710,7 +1811,7 @@ function renderTable(focus) {
   h += `<th class="addc"><button class="hb" id="tAddCol" title="열 추가">${icon('plus')}</button></th></tr></thead><tbody>`;
   t.rows.forEach((r, ri) => {
     h += `<tr><td class="rn"><span>${ri + 1}</span><button class="rx" data-r="${ri}" title="행 삭제">✕</button></td>`;
-    t.cols.forEach((_, ci) => { h += `<td><div class="c${t.hidden[ci] ? ' cover' : ''}" contenteditable="plaintext-only" data-r="${ri}" data-c="${ci}">${esc(r[ci] || '')}</div></td>`; });
+    t.cols.forEach((_, ci) => { h += `<td><div class="c${t.hidden[ci] ? ' cover' : ''}" contenteditable="plaintext-only" data-r="${ri}" data-c="${ci}">${fmtHTML(r[ci] || '')}</div></td>`; });
     h += '<td class="addc"></td></tr>';
   });
   tb.innerHTML = h + '</tbody>';
@@ -1725,9 +1826,23 @@ $('#nTable').addEventListener('input', e => {
   else if (el.classList.contains('hn')) n.table.cols[+el.dataset.c] = cellText(el).replace(/\n/g, ' ');
   touchNote();
 });
+// 칸을 고칠 때는 꾸밈 기호가 보이는 원래 글, 다 고치면 꾸민 모양으로
+$('#nTable').addEventListener('focusin', e => {
+  const el = e.target, n = notes[curNote];
+  if (!isTable(n) || !el.classList || !el.classList.contains('c')) return;
+  const raw = n.table.rows[+el.dataset.r][+el.dataset.c] || '';
+  if (el.innerHTML !== escHTML(raw)) el.textContent = raw;
+});
+$('#nTable').addEventListener('focusout', e => {
+  const el = e.target, n = notes[curNote];
+  if (!isTable(n) || !el.classList || !el.classList.contains('c')) return;
+  el.innerHTML = fmtHTML(n.table.rows[+el.dataset.r][+el.dataset.c] || '');
+});
 $('#nTable').addEventListener('keydown', e => {
   const el = e.target, n = notes[curNote];
   if (!isTable(n) || e.isComposing || e.keyCode === 229) return;
+  const fk = fmtKey(e);
+  if (fk && el.classList.contains('c')) { e.preventDefault(); wrapSelection(el, fk); return; }
   if (el.classList.contains('hn') && e.key === 'Enter') { e.preventDefault(); const c = $(`#nTable .c[data-r="0"][data-c="${el.dataset.c}"]`); if (c) c.focus(); return; }
   if (!el.classList.contains('c')) return;
   const r = +el.dataset.r, c = +el.dataset.c;
@@ -1916,6 +2031,7 @@ async function initCloud() {
    다음에 앱을 열었을 때 “업데이트 완료” 알림으로 보여 줘요.
    ========================================================= */
 const CHANGELOG = [
+  { v: '2026.11.18-1', items: ['굵게(Ctrl+B) · 취소선(Ctrl+Shift+X) — 노드, 포스트잇, 표 칸, 메모'] },
   { v: '2026.11.12-3', items: ['업데이트되면 이렇게 알려 드려요'] },
   { v: '2026.11.12-2', items: ['우클릭한 노드가 클릭되지 않던 문제 수정'] },
   { v: '2026.11.12-1', items: ['독립 웹앱(홈 화면 설치·오프라인)', '전체 백업 · 파일 가져오기'] },

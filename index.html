@@ -282,6 +282,7 @@ kbd{font:12px ui-monospace,Menlo,monospace;background:var(--bg);border:1px solid
 </div>
 <div class="pill" id="gbar" style="display:none;position:fixed;left:50%;bottom:16px;transform:translateX(-50%);gap:2px;z-index:10">
   <button id="gName"></button>
+  <button id="gLink"></button>
   <button id="gColor"></button>
   <button id="gUngroup" class="danger"></button>
 </div>
@@ -596,7 +597,7 @@ function moveNode(id, targetId) {
 function startLink(id) {
   if (editing) commitEdit();
   if (editingSticky) commitStickyEdit();
-  linkFrom = id; selLink = null; selSticky = null;
+  linkFrom = id; selLink = null; selSticky = null; selGroup = null; clearMulti();
   $('#hint').classList.add('show'); applySel();
 }
 function cancelLink() {
@@ -610,7 +611,7 @@ function finishLink(to) {
   if (links().some(l => (l.from === from && l.to === to) || (l.from === to && l.to === from))) { toast('이미 연결돼 있어요'); return; }
   snapshot();
   const l = { id: uid(), from, to, label: '' };
-  links().push(l); sel = null; selSticky = null; selLink = l.id; changed();
+  links().push(l); sel = null; selSticky = null; selGroup = null; selLink = l.id; changed();
   toast('연결했어요');
 }
 function selectLink(id) { sel = null; selGroup = null; clearMulti(); selLink = id; relayout(); applySel(); }
@@ -634,8 +635,10 @@ function shownId(id) {
   for (const n of path) if (n.collapsed && n.id !== id) return n.id;
   return path.length ? id : null;
 }
-/* 관계선의 끝: 노드 또는 포스트잇 → 화면상 중심과 크기 */
+/* 관계선의 끝: 노드, 포스트잇 또는 묶음 → 화면상 중심과 크기 */
 function linkEnd(id) {
+  if (gbox[id]) { const b = gbox[id]; return { key: id, p: { x: b.x + b.w / 2, y: b.y + b.h / 2 }, s: { w: b.w - 12, h: b.h - 12 } }; }
+  if (groups().some(x => x.id === id)) return null;      // 접혀서 안 보이는 묶음
   if (sEls[id]) {
     const el = sEls[id]; if (el.style.display === 'none') return null;
     const w = el.offsetWidth, h = el.offsetHeight;
@@ -645,9 +648,11 @@ function linkEnd(id) {
   if (!k || !pos[k]) return null;
   return { key: k, p: pos[k], s: size[k] };
 }
-const itemExists = id => !!(find(id) || stickies().some(x => x.id === id));
+const itemExists = id => !!(find(id) || stickies().some(x => x.id === id) || groups().some(x => x.id === id));
 function itemName(id) {
   const r = find(id); if (r) return r.node.text.replace(/\n+/g, ' ');
+  const gr = groups().find(x => x.id === id);
+  if (gr) return '묶음: ' + (gr.label || gr.ids.filter(i => find(i)).map(i => plain(find(i).node.text).split('\n')[0]).join(', ').slice(0, 40));
   const st = stickies().find(x => x.id === id);
   return st ? '포스트잇: ' + (st.text.replace(/\n+/g, ' ').slice(0, 30) || '(빈 메모)') : '';
 }
@@ -677,6 +682,7 @@ function pruneGroups() {
     }
     return true;
   });
+  m.links = (m.links || []).filter(l => itemExists(l.from) && itemExists(l.to));   // 없어진 묶음에 이어진 관계선 정리
 }
 function groupOf(id) { return groups().find(gr => gr.ids.includes(id)); }
 function createGroup(ids) {
@@ -700,7 +706,7 @@ function createGroup(ids) {
   changed();
   editGroupLabel(gr.id, true);
 }
-function removeGroup(id) { snapshot(); cur().groups = groups().filter(x => x.id !== id); selGroup = null; changed(); toast('묶음을 풀었어요'); }
+function removeGroup(id) { snapshot(); cur().groups = groups().filter(x => x.id !== id); cur().links = links().filter(l => l.from !== id && l.to !== id); selGroup = null; changed(); toast('묶음을 풀었어요'); }
 function setGroupColor(id, c) { const gr = groups().find(x => x.id === id); if (!gr) return; snapshot(); if (c) gr.color = c; else delete gr.color; changed(); }
 function selectGroup(id) { const had = selLink; sel = null; selLink = null; selSticky = null; selGroup = id; clearMulti(); if (had) relayout(); applySel(); }
 function editGroupLabel(id, fresh) {
@@ -986,9 +992,9 @@ function relayout() {
     const b = { x: x1 - G_X, y: y1 - G_TOP(gr), w: x2 - x1 + G_X * 2, h: y2 - y1 + G_TOP(gr) + G_BOT };
     gbox[gr.id] = b;
     const col = gr.color || meta[gr.ids.find(id => meta[id])]?.color || '#5c7cfa';
-    const on = gr.id === selGroup || (F && gr.ids.includes(F));
+    const on = gr.id === selGroup || gr.id === linkFrom || (F && gr.ids.includes(F));
     const d = `M${b.x + 12},${b.y} H${b.x + b.w - 12} Q${b.x + b.w},${b.y} ${b.x + b.w},${b.y + 12} V${b.y + b.h - 12} Q${b.x + b.w},${b.y + b.h} ${b.x + b.w - 12},${b.y + b.h} H${b.x + 12} Q${b.x},${b.y + b.h} ${b.x},${b.y + b.h - 12} V${b.y + 12} Q${b.x},${b.y} ${b.x + 12},${b.y} Z`;
-    boxPaths.push(`<path d="${d}" fill="${col}" fill-opacity="${on ? .1 : .06}" stroke="${gr.id === selGroup ? 'var(--accent)' : col}" stroke-width="${gr.id === selGroup ? 2.5 : 1.6}" stroke-opacity="${on ? 1 : .75}"/>`
+    boxPaths.push(`<path d="${d}" fill="${col}" fill-opacity="${on ? .1 : .06}" stroke="${gr.id === selGroup ? 'var(--accent)' : gr.id === linkFrom ? 'var(--lk)' : col}" stroke-width="${gr.id === selGroup || gr.id === linkFrom ? 2.5 : 1.6}"${gr.id === linkFrom ? ' stroke-dasharray="7 5"' : ''} stroke-opacity="${on ? 1 : .75}"/>`
       + `<path class="ghit" data-group="${gr.id}" d="${d}" fill="none" stroke="transparent" stroke-width="16"/>`);
     if (lab) { lab.style.display = ''; lab.style.left = (b.x + 10) + 'px'; lab.style.top = (b.y + 8) + 'px'; lab.style.background = col; }
   }
@@ -1051,7 +1057,7 @@ function relayout() {
 let noHighlight = false;
 function focusId() {
   if (g && g.moved && (g.type === 'node' || g.type === 'sticky')) return g.id;
-  return editingSticky || editing || linkFrom || selSticky || sel || null;
+  return editingSticky || editing || linkFrom || selSticky || selGroup || sel || null;
 }
 function applyView() { world.style.transform = `translate(${view.x}px,${view.y}px) scale(${view.s})`; }
 function applySel() {
@@ -1291,6 +1297,7 @@ function onUp(e) {
   } else if (g.type === 'pan' && !g.moved) {
     if (g.id) tapNode(g.id, g.wasSel, g.mod);
     else if (g.stickyTap && linkFrom) finishLink(g.stickyTap);
+    else if (g.groupId && linkFrom) finishLink(g.groupId);
     else if (linkFrom) cancelLink();
     else if (pickGroup) { /* 고르는 중에는 빈 곳 탭 무시 */ }
     else if (g.groupId) { if (selGroup === g.groupId) editGroupLabel(g.groupId); else selectGroup(g.groupId); }
@@ -1367,6 +1374,7 @@ document.addEventListener('keydown', e => {
   if (k === 'Escape' && (multi.size || pickGroup)) { clearMulti(); applySel(); return; }
   if (k === 'Escape') { if (linkFrom) { cancelLink(); return; } hidePopovers(); closeSide(); sel = null; selSticky = null; selGroup = null; const had = selLink; selLink = null; if (had) relayout(); applySel(); return; }
   if (selGroup) {
+    if (k === 'L' && e.shiftKey && !mod) { e.preventDefault(); startLink(selGroup); return; }
     if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); removeGroup(selGroup); }
     else if (k === 'Enter' || k === 'F2') { e.preventDefault(); editGroupLabel(selGroup); }
     return;
@@ -1413,7 +1421,8 @@ barBtn('#lLabel', 'tag', '이름'); barBtn('#lFlip', 'flip', '방향 바꾸기')
 $('#hintCancel').onclick = cancelLink;
 barBtn('#bBold', 'bold', '굵게'); barBtn('#bStrike', 'strike', '취소선');
 barBtn('#bGroup', 'group', '묶기');
-barBtn('#gName', 'tag', '이름'); barBtn('#gColor', 'color', '색'); barBtn('#gUngroup', 'ungroup', '묶음 풀기');
+barBtn('#gName', 'tag', '이름'); barBtn('#gLink', 'link', '연결');
+$('#gLink').onclick = () => selGroup && startLink(selGroup); barBtn('#gColor', 'color', '색'); barBtn('#gUngroup', 'ungroup', '묶음 풀기');
 $('#bGroup').onclick = () => { if (editing) commitEdit(); startGroupPick(); };
 $('#ghintOk').onclick = () => { if (multi.size) createGroup([...multi]); else clearMulti(); };
 $('#ghintCancel').onclick = () => { clearMulti(); applySel(); };
@@ -1821,7 +1830,7 @@ function showHelp() {
     ['다른 주제 아래로', '노드를 끌어 다른 노드 위에 놓기'],
     ['포스트잇', '상단 포스트잇 버튼 · 노드를 선택한 상태면 그 노드에 붙어서 함께 움직여요'],
     ['포스트잇 편집', '탭해서 선택 → 한 번 더 탭하면 글 쓰기 · 끌어서 옮기기 · 노드 위에 놓으면 그 노드에 붙기'],
-    ['관계선 잇기', '노드나 포스트잇 선택 → 툴바 “연결” → 이어질 노드·포스트잇 탭 · <kbd>Shift</kbd>+<kbd>L</kbd>'],
+    ['관계선 잇기', '노드·포스트잇·묶음 선택 → 툴바 “연결” → 이어질 노드·포스트잇 탭 · <kbd>Shift</kbd>+<kbd>L</kbd>'],
     ['관계선 편집', '선을 탭해 선택 → 이름 · 방향 바꾸기 · 삭제 (선택된 선을 한 번 더 탭하면 이름 편집)'], ['실행 취소', '<kbd>Ctrl</kbd>+<kbd>Z</kbd> · 다시: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>'],
     ['화면 이동', '빈 곳을 끌기 · 트랙패드 두 손가락'], ['확대/축소', '마우스 휠 · 두 손가락 핀치'],
   ];
@@ -2234,6 +2243,7 @@ async function initCloud() {
    다음에 앱을 열었을 때 “업데이트 완료” 알림으로 보여 줘요.
    ========================================================= */
 const CHANGELOG = [
+  { v: '2026.11.18-3', items: ['묶음(큰 사각형)에도 관계선 연결 — 묶음 선택 → “연결”, 또는 연결 중에 묶음 테두리·이름표 탭'] },
   { v: '2026.11.18-2', items: ['묶음: 여러 노드를 이름 붙인 큰 사각형으로 감싸기 (툴바 “묶기”, Ctrl+G)', 'Shift/Ctrl+클릭으로 노드 여러 개 선택'] },
   { v: '2026.11.18-1', items: ['굵게(Ctrl+B) · 취소선(Ctrl+Shift+X) — 노드, 포스트잇, 표 칸, 메모'] },
   { v: '2026.11.12-3', items: ['업데이트되면 이렇게 알려 드려요'] },

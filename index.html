@@ -37,7 +37,7 @@ svg.i{width:20px;height:20px;flex:none}
 .node.root{background:var(--root-bg);color:var(--root-ink);border-color:var(--root-bg);font-size:19px;font-weight:700;
   padding:12px 24px;border-radius:999px;max-width:320px;text-align:center}
 .node.l1{font-weight:600;font-size:16px;padding:8px 15px;border-radius:11px;border-width:2px}
-.node.sel{outline:2.5px solid var(--accent);outline-offset:3px}
+.node.sel{outline:2.5px solid var(--accent);outline-offset:3px;z-index:3}
 .node.drop{outline:2.5px dashed var(--accent);outline-offset:4px}
 /* 묶음(여러 노드를 감싸는 큰 사각형) */
 .ghit{pointer-events:stroke;cursor:pointer}
@@ -531,8 +531,33 @@ function snapshot() {
 function changed() {
   pruneGroups();
   cur().updatedAt = Date.now();
-  scheduleSave(cur().id);
   render();
+  nudgeFreeStickies();
+  scheduleSave(cur().id);
+}
+/* 자리를 자동으로 잡은 노드가 자유 포스트잇 밑에 깔리면, 포스트잇을 가장 가까운 빈 쪽으로 살짝 비켜 줌 */
+let keepSticky = null;          // 방금 직접 옮긴 포스트잇은 그대로 둠
+function nudgeFreeStickies() {
+  let moved = false;
+  for (const st of stickies()) {
+    if (st.anchor || st.id === keepSticky) continue;
+    const el = sEls[st.id]; if (!el || el.style.display === 'none') continue;
+    const w = el.offsetWidth, h = el.offsetHeight, M = 10;
+    for (let it = 0; it < 8; it++) {
+      let hit = null;
+      for (const id in pos) {
+        const p = pos[id], z = size[id]; if (!z) continue;
+        const r = { x1: p.x - z.w / 2 - M, y1: p.y - z.h / 2 - M, x2: p.x + z.w / 2 + M, y2: p.y + z.h / 2 + M };
+        if (st.x < r.x2 && st.x + w > r.x1 && st.y < r.y2 && st.y + h > r.y1) { hit = r; break; }
+      }
+      if (!hit) break;
+      const opts = [[0, hit.y1 - (st.y + h)], [0, hit.y2 - st.y], [hit.x1 - (st.x + w), 0], [hit.x2 - st.x, 0]];
+      opts.sort((a, b) => Math.abs(a[0]) + Math.abs(a[1]) - Math.abs(b[0]) - Math.abs(b[1]));
+      st.x += opts[0][0]; st.y += opts[0][1]; moved = true;
+    }
+  }
+  keepSticky = null;
+  if (moved) relayout();
 }
 function stateJson() { return JSON.stringify({ root: cur().root, links: links(), stickies: stickies(), groups: groups() }); }
 function applyState(st) { cur().root = st.root; cur().links = st.links || []; cur().stickies = st.stickies || []; cur().groups = st.groups || []; }
@@ -764,7 +789,7 @@ function stickyPos(st) {
 function besideNode(id) {
   const p = pos[id], sz = size[id];
   if (!p) return { x: 30, y: -100 };
-  return { x: -85 + (p.side < 0 ? -30 : 30), y: -sz.h / 2 - 104 };     // 노드 바로 위 (하위 주제를 가리지 않게)
+  return { x: p.side < 0 ? sz.w / 2 - 170 : -sz.w / 2, y: -sz.h / 2 - 104 };     // 노드 바로 위, 노드 가장자리에 맞춰 (연결선을 가리지 않게)
 }
 function addSticky() {
   if (editing) commitEdit(); if (editingSticky) commitStickyEdit(); if (linkFrom) cancelLink();
@@ -919,11 +944,26 @@ function relayout() {
     }
     return { before, after, sum };
   }
+  // 노드에 붙은 포스트잇이 차지하는 위·아래 공간도 자리로 잡아 둠 (새 노드가 포스트잇에 가려지지 않게)
+  const stUp = {}, stDown = {};
+  for (const st of stickies()) {
+    const el = sEls[st.id], a = st.anchor;
+    if (!el || !a || !size[a] || shownId(a) !== a) continue;
+    const w = el.offsetWidth, h = el.offsetHeight, nw = size[a].w;
+    if (st.x > nw / 2 + 24 || st.x + w < -nw / 2 - 24) continue;          // 노드와 옆으로 떨어져 있으면 제외
+    if (st.y > 260 || st.y + h < -260) continue;                          // 멀리 떨어진 포스트잇은 제외
+    stUp[a] = Math.max(stUp[a] || 0, -(st.y - 8));
+    stDown[a] = Math.max(stDown[a] || 0, st.y + h + 8);
+  }
+  const up = {}, down = {};   // 노드 중심에서 서브트리(+포스트잇)가 위·아래로 차지하는 높이
   function measure(n) {
     const kids = kidsOf(n);
     kids.forEach(measure);
-    let h = kids.reduce((a, c) => a + sh[c.id], 0) + V_GAP * Math.max(0, kids.length - 1) + extras(n.id, kids).sum;
-    return (sh[n.id] = Math.max(size[n.id].h, h));
+    const H = kids.reduce((a, c) => a + sh[c.id], 0) + V_GAP * Math.max(0, kids.length - 1) + extras(n.id, kids).sum;
+    const half = size[n.id].h / 2;
+    up[n.id] = Math.max(half, stUp[n.id] || 0, H / 2);
+    down[n.id] = Math.max(half, stDown[n.id] || 0, H / 2);
+    return (sh[n.id] = up[n.id] + down[n.id]);
   }
   const top = kidsOf(root); top.forEach(measure);
 
@@ -953,7 +993,7 @@ function relayout() {
     for (const c of list) {
       y += ex.before[c.id] || 0;
       const s = size[c.id], off = c.off || { dx: 0, dy: 0 };
-      const x = outerX + dir * (gap + s.w / 2) + off.dx, ccy = y + sh[c.id] / 2 + off.dy;   // off: 직접 옮긴 만큼
+      const x = outerX + dir * (gap + s.w / 2) + off.dx, ccy = y + up[c.id] + off.dy;   // off: 직접 옮긴 만큼
       pos[c.id] = { x, y: ccy, side: dir };
       placeList(kidsOf(c), dir, x + dir * s.w / 2, ccy, H_GAP, c.id);
       y += sh[c.id] + V_GAP + (ex.after[c.id] || 0);   // 형제 간격은 자동 배치 기준 유지
@@ -1280,6 +1320,7 @@ function endNodeDrag(commit) {
     if (!st) return;
     if (!commit) { st.x = g.s0.x; st.y = g.s0.y; relayout(); return; }
     if (target) { st.anchor = target; Object.assign(st, besideNode(target)); toast('노드에 붙였어요'); }
+    keepSticky = st.id;
     commitDrag(g.before);
   }
 }
@@ -2243,6 +2284,7 @@ async function initCloud() {
    다음에 앱을 열었을 때 “업데이트 완료” 알림으로 보여 줘요.
    ========================================================= */
 const CHANGELOG = [
+  { v: '2026.11.18-4', items: ['자동 정렬이 포스트잇 자리를 피해서 배치 — 새 노드가 포스트잇에 가려지지 않아요', '선택한 노드는 포스트잇보다 위에 보여요'] },
   { v: '2026.11.18-3', items: ['묶음(큰 사각형)에도 관계선 연결 — 묶음 선택 → “연결”, 또는 연결 중에 묶음 테두리·이름표 탭'] },
   { v: '2026.11.18-2', items: ['묶음: 여러 노드를 이름 붙인 큰 사각형으로 감싸기 (툴바 “묶기”, Ctrl+G)', 'Shift/Ctrl+클릭으로 노드 여러 개 선택'] },
   { v: '2026.11.18-1', items: ['굵게(Ctrl+B) · 취소선(Ctrl+Shift+X) — 노드, 포스트잇, 표 칸, 메모'] },
